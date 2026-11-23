@@ -4,11 +4,12 @@ Zoom JWT API server
 Install:  pip install fastapi uvicorn
 Run:      uvicorn zoom_jwt_server:app --host 0.0.0.0 --port 8002
 
-Environment:
-  ZOOM_JWT_API_KEY   required; clients must send it in the X-API-Key header
+Environment (all required):
+  ZOOM_JWT_API_KEY     clients must send this in the X-API-Key header
+  ZOOM_CLIENT_ID       Zoom Client ID (used as appKey)
+  ZOOM_CLIENT_SECRET   Zoom Client Secret (used to sign the token)
 
-POST /token   (header: X-API-Key: <key>)
-  {"client_id": "...", "client_secret": "...", "ttl_seconds": 7200}   # ttl optional
+POST /token[?ttl_seconds=7200]   (header: X-API-Key: <key>, no body needed)
 -> {"token": "<jwt>", "issued_at": 1700000000, "expires_at": 1700007200}
 """
 import base64
@@ -19,13 +20,21 @@ import os
 import secrets
 import time
 
-from fastapi import Depends, FastAPI, HTTPException, Security, status
+from fastapi import Depends, FastAPI, HTTPException, Query, Security, status
 from fastapi.security import APIKeyHeader
-from pydantic import BaseModel, Field
+from pydantic import BaseModel
 
-API_KEY = os.environ.get("ZOOM_JWT_API_KEY", "")
-if not API_KEY:
-    raise RuntimeError("ZOOM_JWT_API_KEY environment variable must be set")
+
+def _require_env(name: str) -> str:
+    value = os.environ.get(name, "")
+    if not value:
+        raise RuntimeError(f"{name} environment variable must be set")
+    return value
+
+
+API_KEY = _require_env("ZOOM_JWT_API_KEY")
+ZOOM_CLIENT_ID = _require_env("ZOOM_CLIENT_ID")
+ZOOM_CLIENT_SECRET = _require_env("ZOOM_CLIENT_SECRET")
 
 api_key_header = APIKeyHeader(name="X-API-Key", auto_error=False)
 
@@ -63,13 +72,6 @@ def create_zoom_jwt(key: str, secret: str, ttl_seconds: int) -> tuple[str, int, 
     return f"{header}.{payload}.{signature}", iat, exp
 
 
-class TokenRequest(BaseModel):
-    client_id: str = Field(min_length=1)
-    client_secret: str = Field(min_length=1)
-    # Zoom requires exp to be between 30 minutes and 48 hours after iat
-    ttl_seconds: int = Field(default=2 * 60 * 60, ge=1800, le=48 * 60 * 60)
-
-
 class TokenResponse(BaseModel):
     token: str
     issued_at: int
@@ -77,8 +79,11 @@ class TokenResponse(BaseModel):
 
 
 @app.post("/token", response_model=TokenResponse, dependencies=[Depends(require_api_key)])
-def issue_token(req: TokenRequest):
-    token, iat, exp = create_zoom_jwt(req.client_id, req.client_secret, req.ttl_seconds)
+def issue_token(
+    # Zoom requires exp to be between 30 minutes and 48 hours after iat
+    ttl_seconds: int = Query(default=2 * 60 * 60, ge=1800, le=48 * 60 * 60),
+):
+    token, iat, exp = create_zoom_jwt(ZOOM_CLIENT_ID, ZOOM_CLIENT_SECRET, ttl_seconds)
     return TokenResponse(token=token, issued_at=iat, expires_at=exp)
 
 
