@@ -10,7 +10,8 @@ Environment (all required):
   ZOOM_CLIENT_SECRET   Zoom Client Secret (used to sign the token)
 
 POST /token[?ttl_seconds=7200]   (header: X-API-Key: <key>, no body needed)
--> {"token": "<jwt>", "issued_at": 1700000000, "expires_at": 1700007200}
+-> {"client_id": "...", "client_secret": "...", "token": "<jwt>",
+    "issued_at": 1700000000, "expires_at": 1700007200}
 """
 import base64
 import hashlib
@@ -20,7 +21,7 @@ import os
 import secrets
 import time
 
-from fastapi import Depends, FastAPI, HTTPException, Query, Security, status
+from fastapi import Depends, FastAPI, HTTPException, Query, Response, Security, status
 from fastapi.security import APIKeyHeader
 from pydantic import BaseModel
 
@@ -73,6 +74,8 @@ def create_zoom_jwt(key: str, secret: str, ttl_seconds: int) -> tuple[str, int, 
 
 
 class TokenResponse(BaseModel):
+    client_id: str
+    client_secret: str
     token: str
     issued_at: int
     expires_at: int
@@ -80,11 +83,20 @@ class TokenResponse(BaseModel):
 
 @app.post("/token", response_model=TokenResponse, dependencies=[Depends(require_api_key)])
 def issue_token(
+    response: Response,
     # Zoom requires exp to be between 30 minutes and 48 hours after iat
     ttl_seconds: int = Query(default=2 * 60 * 60, ge=1800, le=48 * 60 * 60),
 ):
     token, iat, exp = create_zoom_jwt(ZOOM_CLIENT_ID, ZOOM_CLIENT_SECRET, ttl_seconds)
-    return TokenResponse(token=token, issued_at=iat, expires_at=exp)
+    # the response contains the client secret: make sure nothing caches it
+    response.headers["Cache-Control"] = "no-store"
+    return TokenResponse(
+        client_id=ZOOM_CLIENT_ID,
+        client_secret=ZOOM_CLIENT_SECRET,
+        token=token,
+        issued_at=iat,
+        expires_at=exp,
+    )
 
 
 @app.get("/health")
